@@ -4,12 +4,18 @@ import csv
 import rtree
 import geocoder
 from time import sleep
-from shapely.geometry import Point, shape, mapping
-import openpyxl
+from shapely.geometry import Point, shape, mapping, MultiLineString, LineString
 from matplotlib import pyplot
 import os
 from os.path import exists as path_exists
 import json
+from dateutil.parser import parse
+import datetime
+from .record import Crash, Record
+import geojson
+from .segment import Segment
+from .record import transformer_4326_to_3857, transformer_3857_to_4326
+
 
 PROJ = pyproj.Proj(init='epsg:3857')
 BASE_DIR = os.path.dirname(
@@ -28,6 +34,9 @@ def read_geocode_cache(filename=PROCESSED_DATA_FP+'geocoded_addresses.csv'):
         Output address
         Latitude
         Longitude
+        Status (whether the geocoding was successful 'S', or the address
+            could not be found 'F', or there was an intermittent error such as
+            a time out, '')
     Args:
         filename
     Results:
@@ -43,7 +52,8 @@ def read_geocode_cache(filename=PROCESSED_DATA_FP+'geocoded_addresses.csv'):
             cached[r['Input Address']] = [
                 r['Output Address'],
                 r['Latitude'],
-                r['Longitude']
+                r['Longitude'],
+                r['Status'],
             ]
     return cached
 
@@ -61,19 +71,42 @@ def write_geocode_cache(results,
         filename - file to write to (defaults to geocoded_addresses.csv)
     """
 
-    with open(filename, 'wb') as f:
+    with open(filename, 'w') as f:
         writer = csv.writer(f)
         writer.writerow([
             'Input Address',
             'Output Address',
             'Latitude',
-            'Longitude'
+            'Longitude',
+            'Status',
         ])
-        for key, value in results.iteritems():
-            writer.writerow([key, value[0], value[1], value[2]])
+        for key, value in results.items():
+            writer.writerow([key, value[0], value[1], value[2], value[3]])
 
 
-def geocode_address(address, cached={}):
+def lookup_address(intersection, cached, mapboxtoken=None):
+    """
+    Look up an intersection first in the cache, and if it
+    doesn't exist, geocode it
+
+    Args:
+        intersection: string
+        cached: dict
+    Returns:
+        tuple of original address, geocoded address, latitude, longitude
+    """
+
+    # If we've cached this either successfully or were unable to find
+    # the address previously
+    if intersection in list(cached.keys()) and cached[intersection][3]:
+        print(intersection + ' is cached')
+        return cached[intersection]
+    else:
+        print('geocoding ' + intersection)
+        return list(geocode_address(intersection, {}, mapboxtoken))
+
+
+def geocode_address(address, cached={}, mapboxtoken=None):
     """
     Check an optional cache to see if we already have the geocoded address
     Otherwise, use google's API to look up the address
@@ -84,46 +117,51 @@ def geocode_address(address, cached={}):
         address
         cached (optional)
     Returns:
-        address, latitude, longitude
+        address, latitude, longitude, status
     """
-    if address in cached.keys():
+    if address in list(cached.keys()):
         return cached[address]
-    g = geocoder.google(address)
+    if mapboxtoken:
+        g = geocoder.mapbox(address, key=mapboxtoken)
+    else:
+        g = geocoder.arcgis(address)
     attempts = 0
     while g.address is None and attempts < 3:
         attempts += 1
         sleep(attempts ** 2)
         g = geocoder.google(address)
-    return g.address, g.lat, g.lng
+
+    status = ''
+
+    if g.status == 'OK':
+        status = 'S'
+    elif g.status == 'ZERO_RESULTS':
+        status = 'F'
+    return g.address, g.lat, g.lng, status
 
 
-def get_hourly_rates(files):
+def get_hourly_rates(volume_file):
     """
-    Function that reads ATRs and generates a sparkline plot
-    of percentages of traffic over time
-    
+    Give the average percentage of traffic that occurs each hour
     Args:
-        files - list of filenames to process
-        outfile - where to write the resulting plot
+        volume_file - path to standarized volume file
+    Returns:
+        counts - the average percentage of traffic that occurs each hour
     """
     all_counts = []
-    for f in files:
-        wb = openpyxl.load_workbook(f, data_only=True)
-        sheet_names = wb.get_sheet_names()
-        if 'Classification-Combined' in sheet_names:
-            sheet = wb.get_sheet_by_name('Classification-Combined')
-            # Right now the cell locations are hardcoded,
-            # but if we expand to cover different formats, will need to change
-            counts = []
-            for row_index in range(9, 33):
-                cell = "{}{}".format('O', row_index)
-                val = sheet[cell].value
-                counts.append(float(val))
-            total = sheet['O34'].value
-            for i in range(len(counts)):
-                counts[i] = counts[i]/total
-            all_counts.append(counts)
-    return all_counts
+    with open(volume_file) as data_file:
+        volumes = json.load(data_file)
+    
+        for v in volumes:
+            counts = v['volume']['hourlyVolume']
+            total = sum(counts)
+            counts = [x/total for x in counts]
+            if counts:
+                all_counts.append(counts)
+
+    counts = [sum(i)/len(all_counts) for i in zip(*all_counts)]
+
+    return counts
 
 
 def plot_hourly_rates(all_counts, outfile):
@@ -136,172 +174,239 @@ def plot_hourly_rates(all_counts, outfile):
         outfile - where to write the resulting plot
     """
 
-    bins = range(0, 24)
+    bins = list(range(0, 24))
     for val in all_counts:
         pyplot.plot(bins, val)
     pyplot.legend(loc='upper right')
     pyplot.savefig(outfile)
 
 
-def read_shp(fp):
-    """ Read shp, output tuple geometry + property """
-    out = [(shape(line['geometry']), line['properties'])
-           for line in fiona.open(fp)]
-    return(out)
+def read_geojson(fp):
+    """ Read geojson file, reproject to 3857, and
+    output tuple geometry + property """
+
+    with open(fp) as f:
+        data = json.load(f)
+    data = reproject_records([x for x in data['features']])
+
+    return [Segment(x['geometry'], x['properties']) for x in data]
 
 
-def write_shp(schema, fp, data, shape_key, prop_key):
-    """ Write Shapefile
-    schema : schema dictionary
-    shape_key : column name or tuple index of Shapely shape
-    prop_key : column name or tuple index of properties
+def get_reproject_point(lat, lon, transformer,
+                        coords=False):
     """
-
-    with fiona.open(fp, 'w', 'ESRI Shapefile', schema) as c:
-        for i in data:
-            # some mismatch in yearly crash data
-            # need to force it to conform to schema
-            for k in schema['properties']:
-                if k not in i[prop_key]:
-                    i[prop_key][k] = ''
-            c.write({
-                'geometry': mapping(i[shape_key]),
-                # need to maintain key order because of fiona persnicketiness
-                'properties': {
-                    k: i[prop_key][k] for k in schema['properties']},
-            })
-
-
-def record_to_csv(filename, records):
-    """
-    Write a csv file from records
+    Turn a point in one projection into another
+    Default is to convert from 4326 to 3857
     Args:
-        filename
-        records - list of records (a dict of dicts)
+        lat
+        long
+    Returns:
+        A point in the specified projection
     """
 
-    with open(filename, 'w') as csvfile:
-        writer = csv.DictWriter(csvfile,
-                                fieldnames=records[0]['properties'].keys())
-        writer.writeheader()
-        for record in records:
-            writer.writerow(record['properties'])
+    lon, lat = transformer.transform(
+        lon, lat
+    )
+
+    if coords:
+        return float(lon), float(lat)
+    else:
+        return Point(float(lon), float(lat))
 
 
-def read_record(record, x, y, orig=None, new=PROJ):
+def read_records_from_geojson(filename):
     """
-    Reads record, outputs dictionary with point and properties
-    Specify orig if reprojecting
-    """
-    if (orig is not None):
-        x, y = pyproj.transform(orig, new, x, y)
-    r_dict = {
-        'point': Point(float(x), float(y)),
-        'properties': record
-    }
-    return(r_dict)
-
-
-def raw_to_record_list(raw, orig, x='X', y='Y'):
-    """
-    Takes a list of dicts, and reprojects it into a list of records
+    Reads appropriately formatted geojson file,
+    converts latitude and longitude to projection 4326, and turns into
+    a Record object
     Args:
-        raw - list of dicts
-        orig - original projection
-        x - name of key indicating longitude (default 'X')
-        y - name of key indicating latitude (default 'Y')
+        filename - geojson file
+    Returns:
+        A list of Records
     """
-    result = []
-    for r in raw:
-        result.append(
-            read_record(r, r[x], r[y],
-                        orig=orig)
-        )
-    return result
 
-
-def csv_to_projected_records(filename, x='X', y='Y'):
-    """
-    Reads a csv file in and creates a list of records,
-    reprojecting x and y coordinates from projection 4326
-    to projection 3857
-
-    Args:
-        filename (csv file)
-        optional:
-            x coordinate name (defaults to 'X')
-            y coordinate name (defaults to 'Y')
-    """
     records = []
     with open(filename) as f:
-        csv_reader = csv.DictReader(f)
-        for r in csv_reader:
-            # Can possibly have 0 / blank coordinates
-            if r[x] != '':
-                records.append(
-                    read_record(r, r[x], r[y],
-                                orig=pyproj.Proj(init='epsg:4326'))
-                )
+        items = geojson.load(f)
+        for item in items['features']:
+            properties = item['properties']
+            properties['location'] = {
+                'latitude': item['geometry']['coordinates'][1],
+                'longitude': item['geometry']['coordinates'][0]
+            }
+            record = Record(properties)
+            records.append(record)
     return records
 
 
-def find_nearest(records, segments, segments_index, tolerance):
+def read_records(filename, record_type,
+                 startdate=None, enddate=None):
+    """
+    Reads appropriately formatted json file,
+    pulls out currently relevant features,
+    converts latitude and longitude to projection 4326, and turns into
+    a Crash object
+    Args:
+        filename - json file
+        start - optionally give start for date range of crashes
+        end - optionally give end date after which to exclude crashes
+    Returns:
+        A list of Crashes
+    """
+
+    records = []
+    items = json.load(open(filename))
+    if not items:
+        return []
+
+    for item in items:
+        record = None
+        if record_type == 'crash':
+            record = Crash(item)
+        else:
+            record = Record(item)
+        records.append(record)
+
+    if startdate:
+        records = [x for x in records if x.timestamp >= parse(startdate)]
+    if enddate:
+        records = [x for x in records
+                   if x.timestamp < parse(enddate) + datetime.timedelta(1)]
+
+    # Keep track of the earliest and latest crash date used
+    start = min([x.timestamp for x in records])
+    end = max([x.timestamp for x in records])
+    if start and end:
+        print("Read in data from {} crashes from {} to {}".format(
+            len(records), start.date(), end.date()))
+    print("Read in data from {} records".format(len(records)))
+
+    return records
+
+
+def find_nearest(records, segments, segments_index, tolerance,
+                 type_record=False):
     """ Finds nearest segment to records
     tolerance : max units distance from record point to consider
     """
 
-    print "Using tolerance {}".format(tolerance)
+    print("Using tolerance {}".format(tolerance))
 
     for record in records:
-        record_point = record['point']
+
+        # We are in process of transition to using Record class
+        # but haven't converted it everywhere, so until we do, need
+        # to look at whether the records are of type record or not
+        record_point = None
+        if type_record:
+            record_point = record.point
+        else:
+            record_point = record['point']
+
         record_buffer_bounds = record_point.buffer(tolerance).bounds
         nearby_segments = segments_index.intersection(record_buffer_bounds)
+
         segment_id_with_distance = [
             # Get db index and distance to point
             (
-                segments[segment_id][1]['id'],
-                segments[segment_id][0].distance(record_point)
+                segments[segment_id].properties['id'],
+                segments[segment_id].geometry.distance(record_point)
             )
             for segment_id in nearby_segments
         ]
+
         # Find nearest segment
         if len(segment_id_with_distance):
             nearest = min(segment_id_with_distance, key=lambda tup: tup[1])
             db_segment_id = nearest[0]
             # Add db_segment_id to record
-            record['properties']['near_id'] = db_segment_id
+            if type_record:
+                record.near_id = db_segment_id
+            else:
+                record['properties']['near_id'] = db_segment_id
         # If no segment matched, populate key = ''
         else:
-            record['properties']['near_id'] = ''
+            if type_record:
+                record.near_id = ''
+            else:
+                record['properties']['near_id'] = ''
 
 
-def read_segments(dirname=MAP_FP):
+def read_segments(dirname=MAP_FP, get_inter=True, get_non_inter=True):
     """
     Reads in the intersection and non intersection segments, and
     makes a spatial index for lookup
 
     Args:
         Optional directory (defaults to MAP_FP)
+        get_inter - if given, return inter segments; defaults to True
+        get_non_inter - if given, return non inter segments; defaults to True
     Returns:
-        The combined segments and spatial index
+        The segments and spatial index
     """
-    # Read in segments
-    inter = read_shp(dirname + '/inters_segments.shp')
-    non_inter = read_shp(dirname + '/non_inters_segments.shp')
-    print "Read in {} intersection, {} non-intersection segments".format(
-        len(inter), len(non_inter))
 
-    # Combine inter + non_inter
-    combined_seg = inter + non_inter
+    inter = []
+    non_inter = []
 
+    if get_inter:
+        inter = fiona.open(dirname + '/inters_segments.geojson')
+        inter = reproject_records([x for x in inter])
+        inter = [{
+            'geometry': mapping(x['geometry']),
+            'properties': x['properties']} for x in inter]
+
+    if get_non_inter:
+        non_inter = fiona.open(
+            dirname + '/non_inters_segments.geojson')
+        non_inter = reproject_records([x for x in non_inter])
+        non_inter = [{
+            'geometry': mapping(x['geometry']),
+            'properties': x['properties']} for x in non_inter]
+
+    print("Read in {} intersection, {} non-intersection segments".format(
+        len(inter), len(non_inter)))
+
+    return index_segments(list(inter) + list(non_inter))
+
+
+def index_segments(segments, geojson=True, segment=False):
+    """
+    Reads a list of segments in geojson format, and makes
+    a spatial index for lookup
+    Args:
+        list of segments
+        geojson - whether or not the list of tuples are in geojson format
+            (the other option is shapely shapes) defaults to True
+    Returns:
+        segments (in shapely format), and segments_index
+    """
+
+    combined_seg = segments
+    if segment:
+        combined_seg = segments
+    elif geojson:
+        # Read in segments and turn them into shape, propery tuples
+        combined_seg = [Segment(shape(x['geometry']), x['properties']) for x in
+                        segments]
     # Create spatial index for quick lookup
     segments_index = rtree.index.Index()
     for idx, element in enumerate(combined_seg):
-        segments_index.insert(idx, element[0].bounds)
+        segments_index.insert(idx, element.geometry.bounds)
+
     return combined_seg, segments_index
 
 
-def group_json_by_location(jsonfile, otherfields=[]):
+def group_json_by_field(items, field):
+    results = {}
+    for item in items:
+        if item[field] not in list(results.keys()):
+            results[item[field]] = []
+        results[item[field]].append(item)
+    return results
+
+
+def group_json_by_location(
+        items, years=None, yearfield=None, otherfields=[]):
     """
     Get both the json data from file as well as a dict where the keys
     are the segment id and the values are count, and a list of the values
@@ -311,17 +416,292 @@ def group_json_by_location(jsonfile, otherfields=[]):
         otherfields - optional list of keys of things you want to include
                       in the grouped by segment results
     """
-    items = json.load(open(jsonfile))
     locations = {}
 
     for item in items:
-        if str(item['near_id']) not in locations.keys():
-            d = {'count': 0}
+        if not years or (
+                years and yearfield and parse(item[yearfield]).year in years):
+            if str(item['near_id']) not in list(locations.keys()):
+                d = {'count': 0}
+                for field in otherfields:
+                    d[field] = []
+                locations[str(item['near_id'])] = d
+            locations[str(item['near_id'])]['count'] += 1
             for field in otherfields:
-                d[field] = []
-            locations[str(item['near_id'])] = d
-        locations[str(item['near_id'])]['count'] += 1
-        for field in otherfields:
-            locations[str(item['near_id'])][field].append(item[field])
+                locations[str(item['near_id'])][field].append(item[field])
 
     return items, locations
+
+
+def track(index, step, tot):
+    """
+    Prints progress at interval
+    """
+    if index % step == 0:
+        print("finished {} of {}".format(index, tot))
+
+
+def reproject(coords, transformer=None):
+    """
+    Reproject a set of coordinate points
+    Args:
+        coords: a list of coords
+        transformer - a pyproj transformer object
+            if not given, the default is to transform from
+            4326 to 3857 projection
+    Returns:
+        new_coords = a list of reprojected json points
+    """
+    new_coords = []
+    if not transformer:
+        transformer = transformer_4326_to_3857
+
+    for coord in coords:
+        re_point = transformer.transform(coord[0], coord[1])
+        point = Point(re_point)
+        new_coords.append(mapping(point))
+    return new_coords
+
+
+def reproject_records(records, transformer=None):
+    """
+    Reprojects a set of records from one projection to another
+    Records can either be points, line strings, or multiline strings
+    Args:
+        records - list of records to reproject
+        optional: transformer object (if not given, defaults to 4326->3857)
+    Returns:
+        list of reprojected records
+    """
+    results = []
+
+    if not transformer:
+        transformer = transformer_4326_to_3857
+
+    for record in records:
+        coords = record['geometry']['coordinates']
+        if record['geometry']['type'] == 'Point':
+            re_point = transformer.transform(coords[0], coords[1])
+            point = Point(re_point)
+            results.append({'geometry': point,
+                            'properties': record['properties']})
+        elif record['geometry']['type'] == 'MultiLineString':
+            new_coords = []
+            for segment in coords:
+                new_segment = []
+                for coord in segment:
+                    new_segment.append(transformer.transform(
+                        coord[0], coord[1]))
+                new_coords.append(new_segment)
+
+            results.append({'geometry': MultiLineString(new_coords),
+                            'properties': record['properties']})
+        elif record['geometry']['type'] == 'LineString':
+            new_coords = []
+            for coord in coords:
+                new_coords.append(
+                    transformer.transform(coord[0], coord[1])
+                )
+            results.append({'geometry': LineString(new_coords),
+                            'properties': record['properties']})
+
+    return results
+
+
+def write_records_to_geojson(records, outfilename):
+    """
+    Given a list of record objects, write them to geojson file
+    Args:
+        records - a list of objects that contain geometry and properties
+        outfilename - geojson file to write to
+    Returns:
+        records as a geojson list
+    """
+
+    records = [{
+        'geometry': mapping(record.geometry),
+        'properties': record.properties
+        } for record in records]
+
+    records = prepare_geojson(records)
+    with open(outfilename, 'w') as outfile:
+        geojson.dump(records, outfile)
+    return records
+
+
+def prepare_geojson(elements):
+    """
+    Prepares a list of elements to be written as geojson, reprojecting
+    from 3857 to 4326
+    Args:
+        elements - a list of dicts with geometry and properties
+    Results:
+        A geojson feature collection
+    """
+
+    elements = reproject_records(elements, transformer_3857_to_4326)
+    results = [geojson.Feature(
+        geometry=mapping(x['geometry']),
+        id=x['properties']['id'] if 'id' in x['properties'] else '',
+        properties=x['properties']) for x in elements]
+
+    return geojson.FeatureCollection(results)
+
+
+def make_schema(geometry, properties):
+    """
+    Utility for making schema with 'str' value for each key in properties
+    """
+    properties_dict = {k: 'str' for k, v in list(properties.items())}
+    schema = {
+        'geometry': geometry,
+        'properties': properties_dict
+    }
+    return(schema)
+
+
+def is_inter(seg_id):
+    if len(str(seg_id)) > 1 and str(seg_id)[0:2] == '00':
+        return False
+    return True
+
+
+def get_center_point(segment):
+    """
+    Get the centerpoint for a linestring or multiline string
+    Args:
+        segment object - LineString or MultiLineString
+    Returns:
+        x, y tuple for the centerpoint
+    """
+
+    if segment.geometry.type == 'LineString':
+        point = segment.geometry.interpolate(
+            .5, normalized=True)
+        return point.x, point.y
+    elif segment.geometry.type == 'MultiLineString':
+        lines = [x for x in [line for line in segment.geometry]]
+        coords = []
+        for line in lines:
+            coords.extend([x for x in line.coords])
+
+        minx = min([x[0] for x in coords])
+        maxx = max([x[0] for x in coords])
+        miny = min([x[1] for x in coords])
+        maxy = max([x[1] for x in coords])
+        point = LineString([[minx, miny], [maxx, maxy]]).interpolate(
+            .5, normalized=True)
+        point = segment.geometry.interpolate(segment.geometry.project(point))
+
+        return point.x, point.y
+
+    return None, None
+
+
+def get_roads_and_inters(filename):
+    """
+    Pull the roads and the intersections from a geojson file
+    Typically this will read from the standardized osm_elements.geojson.
+    Since that file includes dead ends, these will also be stripped.
+    Everything will also be reprojected into 3857 projection
+    Args:
+        filename - geojson file of linestrings and points
+    Returns:
+        roads, intersections
+    """
+    data = fiona.open(filename)
+
+    data = reproject_records([x for x in data])
+    # All the line strings are roads
+    roads = [Segment(x['geometry'], x['properties']) for x in data
+             if x['geometry'].type == 'LineString']
+
+    # Get the intersection list by excluding anything that's not labeled
+    # as an intersection
+    inters = [x for x in data if x['geometry'].type == 'Point'
+              and 'intersection' in list(x['properties'].keys())
+              and x['properties']['intersection']]
+
+    return roads, inters
+
+
+def output_from_shapes(items, filename):
+    """
+    Write a list of polygons in 3857 projection to file in 4326 projection
+    Used for debugging purposes
+    At the moment, since this has only output intersection buffers,
+    the resulting output won't contain any properties
+
+    Args:
+        polys - list of polygon objects
+        filename - output file
+    Returns:
+        nothing, writes to file
+    """
+    output = []
+
+    for item, properties in items:
+        if item.type == 'Polygon':
+            coords = [x for x in item.exterior.coords]
+            reprojected_coords = [[get_reproject_point(
+                x[1], x[0], transformer_3857_to_4326, coords=True)
+                                  for x in coords]]
+        elif item.type == 'MultiLineString':
+            lines = [x for x in item]
+            reprojected_coords = []
+            for line in lines:
+                reprojected_coords.append([get_reproject_point(
+                    x[1], x[0], transformer_3857_to_4326, coords=True)
+                                  for x in line.coords])
+        elif item.type == 'LineString':
+            coords = [x for x in item.coords]
+            reprojected_coords = [get_reproject_point(
+                x[1], x[0], transformer_3857_to_4326, coords=True)
+                                  for x in coords]
+        elif item.type == 'Point':
+            reprojected_coords = get_reproject_point(
+                item.y, item.x, transformer_3857_to_4326,
+                coords=True
+            )
+        else:
+            print("{} not supported, skipping".format(item.type))
+            continue
+        output.append({
+            'type': 'Feature',
+            'geometry': {
+                'type': item.type,
+                'coordinates': reprojected_coords
+            },
+            'properties': properties
+        })
+
+    with open(filename, 'w') as outfile:
+        geojson.dump(geojson.FeatureCollection(output), outfile)
+
+
+def write_segments(non_inters, inters, mapfp):
+    """
+    Writes non_inters, inters and combined inter_and_non_int.geojson
+    Args:
+        non_inters - list of non_inters segment objects
+        inters - list of inters segment objects
+        mapfp - maps directory to write to
+    """
+    # Store non-intersection segments
+
+    non_inters = write_records_to_geojson(
+        non_inters, os.path.join(
+            mapfp, 'non_inters_segments.geojson'))
+
+    # Store the individual intersections
+    int_w_ids = write_records_to_geojson(
+        inters, os.path.join(
+            mapfp, 'inters_segments.geojson'))
+
+    # Store the combined segments with all properties
+    segments = non_inters['features'] + int_w_ids['features']
+
+    with open(os.path.join(mapfp, 'inter_and_non_int.geojson'), 'w') as outfile:
+        geojson.dump(geojson.FeatureCollection(segments), outfile)
+
+

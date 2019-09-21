@@ -1,0 +1,28 @@
+| Feature Name | Description | Example Values | City |Comments (Optional) |
+| ---: | ---: | ---: | ---: |---: |
+| segment\_id | Id of segment in question | 26 | All |   |
+| Surface\_Tp | 1 = Unimproved graded earth, or soil surface road<br/> 2 = Gravel or stone road<br/> 3 = Brick road<br/> 4 = Block road<br/>5 = Surface-treated road<br/> 6 = Bituminous concrete road<br/> 7 = Portland cement concrete road<br/> 8 = Composite road; flexible over rigid<br/>9 = Composite road; rigid over flexible or rigid over rigid<br/> (&quot;white topping&quot;) 10=Stone dust | 5 |   Boston |Categorical, a column is made for each unique value of this in the dataset |
+| SPEEDLIMIT | Speed limit for that segment | 20 | Boston  | Categorical, a column is made for each unique value of this in the dataset |
+| volume_coalesced | Total Volume of vehicles passing that segment, inclusing heavyweight, lightweight and bikes. Final values are after processing ATR data in our pipeline to impute missing continuous values using the k-NN algorithm. | 2045 | Boston |  |
+| speed_coalesced | Mean speed (in mph) of vehicles passing that segment. Final values are after processing ATR data in our pipeline to impute missing continuous values using the k-NN algorithm. | 22 | Boston |  |
+| Lanes | Number of lanes in the segment | 3 | All  |   |
+| width | Width of the road segment, as given by open street map | 15 | All  | Used as a log value in our model  |
+| Struct\_Cnd |  Structural Condition | &#39;pre\_month&#39; |  Boston | Categorical, a column is made for each unique value of this in the dataset |
+| cycleway_type |0 = None<br/> 1 = Lane<br/> 2 = Shared Labe<br/> 3 = Track<br/>4 = Shared busway<br/> 5 = Buffered Lane<br/> | 0 | All |   |
+| F\_F\_Class| Federal Functional class for that segment. Codes includes:<br/>1 = Interstate<br/> 2 = Other<br/> Freeways and Expressways<br/> 3 = Other Principal Arterial<br/> 4 = Minor Arterial<br/> 5 = Major Collector<br/> 6 = Minor Collector<br/> 7 = Local<br/> | 5 | Boston|Functional classification is the grouping of highways, roads and streets by the character of service they provide and was developed for transportation planning purposes. Categorical, a column is made for each unique value of this in the dataset |
+| Conflict | | | |   |
+| oneway | Is the segment one way or not | 0 | All |Boolean |
+| AADT | Annual average daily traffic value on that segment for that week | 10.008883 | Boston| Used in our model as a log transformed value |
+| visionzero | Number of vision zero comments from seeclickfix for that segment | 5 | Boston  |   |
+| Seeclickfix | Number of concerns from seeclickfix for that [week, year] | 10 |Currently in use for Cambridge only  |   |
+| parking_tickets | Number of parking tickets for that segment | 10 |Currently in use for Cambridge only  |   |
+| intersection | Is this segment part of an intersection | 0/1 |All|   |
+| log_width_per_lane | Log value of width | |All|   |
+ACCIDENT_TYPE | Type of accident, basic description of what occured. <br> 1 = Collision with vehicle <br> 2 = Struck pedestrian <br> 3 = Struck animal <br> 4 = Collision with a fixed object <br> 5 = Collision with some other object <br> 6 = Vehicle overturned (no collision) <br> 7 = Fall from or in moving vehicle <br> 8 = No collision and no object stuck <br> 9 = Other accident | 2 | Melbourne, Australia | ACCIDENT_TYPE is a character field and cannot contain NULL values.
+HIT_RUN_FLAG | Binary indicates whether or not the crash was a hit-run accident. <br> N = No <br> Y = Yes <br> - = Unknown | N | Melbourne, Australia | HIT_RUN_FLAG is a character field and cannot contain NULL values.
+LIGHT_CONDITION | Indicates light condition or level of brightness at the time of the accident. <br> 1 = Day <br> 2 = Dusk/dawn <br> 3 = Dark (street lights on) <br> 4 = Dark (street lights off) <br> 5 = Dark (no street lights) <br> 6 = Dark (street lights unknown) <br> 7 = Dusk <br> 8 = Dawn <br> 9 = Unknown | 5 | Melbourne, Australia | LIGHT_CONDITION is a character field and cannot contain NULL values.
+ROAD_GEOMETRY | indicates the layout of the road where the accident occurred. <br> 1 = Cross intersection <br> 2 = T-intersection <br> 3 = Y-intersection <br> 4 = Multiple intersections <br> 5 = Not at intersection <br> 6 = Dead end <br> 7 = Road closure <br> 8 = Private property <br> 9 = Unknown | 4 | Melbourne, Australia | ROAD_GEOMETRY is a character field and cannot contain NULL values.
+SEVERITY | Indicates estimation of the severity or seriousness of the accident. <br> 1 = Fatal <br> 2 = Serious injury <br> 3 = Other injury <br> 4 = Non-injury | 3 | Melbourne, Australia | SEVERITY is a character field and cannot contain NULL values.
+SPEED_ZONE | Indicates the speed zone at the location of the accident. <br> ranges from 030 to 110 = 30km/hr to 110km/hr <br> 777 = Other speen limit <br> 888 = Camping grounds or off road <br> 999 = Not known | 030 | Melbourne, Australia | SPEED_ZONE is a character field and cannot contain NULL values.
+LOCATION_TYPE | Indicates the type of node location or position that corresponds to the accident <br> I = Intersection <br> N = Non-intersection <br> O = off-road <br> U = Unknown | I | Melbourne, Australia | LOCATION_TYPE is a character field and cannot contain NULL values. It may contain empty fields.
+ROAD_USER_TYPE  | Indicates what the role of the person was at the time of the accident. <br> 1 = Pedestrian <br> 2 = Driver <br> 3 = passenger <br> 4 = Motorcyclist <br> 5 = Pillion Passenger <br> 6 = Bicyclist <br> 7 = Other driver <br> 8 = Other passenger <br> 9 = Not known | 4 | Melbourne, Australia | ROAD_USER_TYPE is a character field and cannot contain NULL values.

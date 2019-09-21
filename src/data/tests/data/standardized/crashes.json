@@ -1,0 +1,13 @@
+[
+    {
+        "id": 1403832,
+        "dateOccurred": "2016-01-01T00:56:45-05:00",
+        "mode": "vehicle",
+        "location": {
+            "latitude": 42.236942,
+            "longitude": -71.130909
+        },
+        "address": "14 Corona Street",
+        "summary": "REPORTED INJURIES (P) (E) (F)"
+    }
+]

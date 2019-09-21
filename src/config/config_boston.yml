@@ -1,0 +1,118 @@
+# City name
+city: Boston, Massachusetts, USA
+# The folder under data where this city's data is stored
+name: boston
+# City centerpoint latitude & longitude
+city_latitude: 42.3600825
+city_longitude: -71.0588801
+timezone: America/New_York
+# Radius of city's road network from centerpoint in km (required if OSM has no polygon data)
+city_radius: 15
+# If given, limit crashes to after startdate and no later than enddate
+startdate: 2015-01-01
+enddate: 2017-12-31
+
+##############################################################################
+# Configuration for data standardization
+
+# crash file configurations
+crashes_files:
+    vzopendata.csv:
+        required:
+            id: ID
+            latitude: lat
+            longitude: long
+            # If date supplied in single column:
+            date_complete: dispatch_ts
+            # If date is separated into year/month/day:
+            date_year: 
+            date_month: 
+            # Leave date_day empty if not available
+            date_day: 
+            # If time is available and separate from date:
+            time: 
+            # If time specified, time_format is one of:
+            # default (HH:MM:SS)
+            # seconds (since midnight)
+            # military (HHMM)
+            time_format: 
+        optional:
+            summary: location_type
+            address: 
+            split_columns:
+              pedestrian:
+                column_name: mode_type
+                column_value: ped
+              bike:
+                column_name: mode_type
+                column_value: bike
+              vehicle:
+                column_name: mode_type
+                column_value: mv
+
+##############################################################################
+
+# atr filepath (should be in processed subfolder)
+# leave as '' if not adding atrs
+atr: 'atrs_predicted.csv'
+# atr column names as list
+atr_cols:
+- speed_coalesced
+- volume_coalesced
+
+# tmc filepath (should be in processed subfolder)
+# leave as '' if not adding tmcs
+tmc: 'tmc_summary.json'
+# tmc column names as list
+tmc_cols:
+- Conflict
+
+#################################################################
+# Configuration for default features
+
+# Default features from open street map. You can remove features you don't want
+# Note: we don't support adding features in the config file.
+# If there is an additional feature you want from open street map, contact the development team
+openstreetmap_features:
+  categorical:
+    width: Width
+    cycleway_type: Bike lane
+    oneway: One Way
+    lanes: Number of lanes
+  continuous:
+    width_per_lane: Average width per lane
+
+# Configuration for default waze features
+waze_features:
+  categorical:
+    jam: Existence of a jam
+  continuous:
+    jam_percent: Percent of time there was a jam
+
+
+# Additional city-specific features can be added from alternate map
+additional_map_features:
+  # The path to the extra map, must be in 3857 projection
+  extra_map: ../data/boston/raw/maps/ma_cob_spatially_joined_streets.shp
+  continuous:
+    AADT: Average annual daily traffic
+  categorical:
+    Struct_Cnd: Condition
+    Surface_Tp: Road type
+    F_F_Class: Functional class
+speed_limit: SPEEDLIMIT
+
+# Additional data sources
+data_source:
+- name: visionzero
+  filename: Vision_Zero_Entry.csv
+  latitude: Y
+  longitude: X
+  date: REQUESTDATE
+  category: REQUESTTYPE
+- name: see_click_fix
+  filename: bos_scf.csv
+  latitude: Y
+  longitude: X
+  date: created
+

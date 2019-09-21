@@ -1,0 +1,89 @@
+# City name
+city: Cambridge, Massachusetts, USA
+# The folder under data where this city's data is stored
+name: cambridge
+# City centerpoint latitude & longitude
+city_latitude: 42.3736158
+city_longitude: -71.10973349999999
+timezone: America/New_York
+# Radius of city's road network from centerpoint in km (required if OSM has no polygon data)
+city_radius: 10
+# If given, limit crashes to after startdate and no later than enddate
+startdate:
+enddate:
+
+##############################################################################
+# Configuration for data standardization
+
+# crash file configurations
+crashes_files:
+  Crashes20152017.csv:
+    required:
+      id: ID
+      latitude: Y
+      longitude: X
+      # If date supplied in single column:
+      date_complete: DateTime
+      # If date is separated into year/month/day:
+      date_year:
+      date_month:
+      # Leave date_day empty if not available
+      date_day:
+      # If time is available and separate from date:
+      time:
+      # If time specified, time_format is one of:
+      # default (HH:MM:SS)
+      # seconds (since midnight)
+      # military (HHMM)
+      time_format:
+    optional:
+      summary:
+      address: Address
+      split_columns:
+        pedestrian:
+          column_name: Type
+          column_value: PED
+        bike:
+          column_name: Type
+          column_value: CYC
+        vehicle:
+          column_name: Type
+          column_value: AUTO
+
+# Additional data sources
+data_source:
+- name: parking_tickets
+  filename: Cambridge_Parking_Tickets.csv
+  address: Location
+  date: Ticket Issue Date
+  time: Issue Time
+  category: Violation Description
+  notes:
+    # Feature can be categorical (f_cat) or continuous (f_cont)
+  feat_type: continuous
+- name: seeclickfix
+  filename: Commonwealth_Connect_Service_Requests.csv
+  latitude: lat
+  longitude: lng
+  date: ticket_created_date_time
+  category: issue_type  
+#  feat_type: categorical
+
+openstreetmap_features:
+  categorical:
+    width: Width
+    cycleway_type: Bike lane
+    oneway: One Way
+    lanes: Number of lanes
+  continuous:
+    width_per_lane: Average width per lane
+waze_features:
+  categorical:
+    jam: Existence of a jam
+  continuous:
+    jam_percent: Percent of time there was a jam
+    avg_jam_level: Jam level
+#    alert_WEATHERHAZARD: Waze weather hazard alert
+#    alert_JAM: Waze jam alert
+#    alert_ROAD_CLOSED: Waze road closed alert
+#    alert_ACCIDENT: Waze crash alert

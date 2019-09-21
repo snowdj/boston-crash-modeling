@@ -4,9 +4,6 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# remove data
-data/*
-
 # C extensions
 *.so
 
@@ -97,7 +94,4 @@ ENV/
 Scripts
 
 # Data
-data/*
-
-# API Keys
-config.js
+data/
